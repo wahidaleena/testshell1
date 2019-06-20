@@ -1,110 +1,39 @@
 #!/bin/sh
-# tar comparison program
-# 2007-10-25 Jan Psota
+# Changes the version number
+# !!!THIS SCRIPT IS FOR INTERNAL DEVELOPER USE ONLY!!!
 
-n=3                                     # number of repetitions
-TAR="bsdtar gnutar star"                # Tape archivers to compare
-OPT=("" "--seek" "-no-fsync")
-pax="--format=pax"                      # comment out for defaults
-OPN=(create list extract compare)       # operations
-version="2007-10-25"
-TIMEFORMAT=$'%R\t%U\t%S\t%P'
-LC_ALL=C
+type -P sed &>/dev/null || { echo "sed command not found. Aborting." >&2; exit 1; }
 
-test $# -ge 2 || {
-        echo -e "usage:\t$0 source_dir where_to_place_archive 
-[where_to_extract_it]
+if [ ! -n "$1" ]; then
+  echo "you must provide a version number (eg. 2.1)"
+  exit 1
+else
+  MAJOR=`echo $1 | sed "s/\(.*\)[.].*/\1/"`
+  MINOR=`echo $1 | sed "s/.*[.]\(.*\)/\1/"`
+fi
+case $MAJOR in *[!0-9]*) 
+  echo "$MAJOR is not a number"
+  exit 1
+esac
+case $MINOR in *[!0-9]*) 
+  echo "$MINOR is not a number"
+  exit 1
+esac
+echo "changing version to $MAJOR.$MINOR"
+sed -i -e "s/^AC_INIT(\[\([^ ]*\)\], \[[^ ]*\]\(.*\)/AC_INIT([\1], [$MAJOR.$MINOR]\2/" configure.ac
+cat > cmd.sed <<\_EOF
+s/^\([ \t]*\)\(FILE\|PRODUCT\)VERSION\([ \t]*\)[0-9]*,[0-9]*\(.*\)/\1\2VERSION\3@@MAJOR@@,@@MINOR@@\4/
+s/^\([ \t]*\)VALUE\([ \t]*\)"\(File\|Product\)Version",\([ \t]*\)"[0-9]*\.[0-9]*\.\(.*\)/\1VALUE\2"\3Version",\4"@@MAJOR@@.@@MINOR@@.\5/
+s/^\([ \t]*\)VALUE\([ \t]*\)"OriginalFilename",\([ \t]*\)"rufus-[0-9]*\.[0-9]*\.exe\(.*\)/\1VALUE\2"OriginalFilename",\3"rufus-@@MAJOR@@.@@MINOR@@.exe\4/
+s/^\(.*\)"Rufus [0-9]*\.[0-9]*\.\(.*\)"\(.*\)/\1"Rufus @@MAJOR@@.@@MINOR@@.\2"\3/
+s/^\([ \t]*\)Version="[0-9]*\.[0-9]*\.\(.*\)"\(.*\)/\1Version="@@MAJOR@@.@@MINOR@@.\2"\3/
+s/^set VERSION=[0-9]*\.[0-9]*/set VERSION=@@MAJOR@@.@@MINOR@@/
+_EOF
 
-TCP, version $version
-TCP stands for Tar Comparison Program here.
-It currently compares: BSD tar (bsdtar), GNU tar (gnutar) and star in archive
-creation, listing, extraction and archive-to-extracted comparison.
-Tcp prints out best time of n=$n repetitions.
-
-Tcp creates temporary archive named tcp.tar with $pax and some native
-(--seek/-no-fsync) options and extracts it to [\$3]/tcptmp/.
-If unset, third argument defaults to [\$2].
-After normal exit tcp removes tarball and extracted files.
-Tcp does not check filesystems destination directories are on for free space,
-so make sure there is enough space (a bit more than source_dir uses) for both:
-archive and extracted files.
-Do not use white space in arguments.
-        Jan Psota, $version"
-        exit 0
-}
-src=$1
-dst=$2/tcp.tar
-dst_path=${3:-$2}/tcptmp
-test -e $dst -o -e /tmp/tcp \
-        && { echo "$dst or /tmp/tcp exists, exiting"; exit 1; }
-mkdir $dst_path || exit 2
-
-use_times ()
-{
-        awk -F"\t" -vN=$n -vL="`du -k $dst`" -vOFS="\t" -vORS="" '
-                { if (NF==4) { printf "\t%s\t%10.1d KB/s\n", $0, ($1+0>0 ? 
-(L+0)/($1+0) : 0) } }' \
-                /tmp/tcp | sort | head -1
-        > /tmp/tcp
-}
-
-test -d $src || { echo "'$src' is not a directory"; exit 3; }
-
-# system information: type, release, memory, cpu(s), compiler and flags
-echo -e "TCP, version $version\n"`uname -sr`" / "`head -1 /etc/*-release`
-free -m | awk '/^Mem/ { printf "%dMB of memory, ", $2 }'
-test -e /proc/cpuinfo \
-        && awk -F: '/name|cache size|MHz|mips/ { if (!a) b=b $2 }
-        /^$/ { a++ } END { print a" x"b" bmips" }' /proc/cpuinfo
-test -e /etc/gentoo-release \
-        && gcc --version | head -1 && grep ^CFLAGS /etc/make.conf
-
-# tar versions
-t=
-echo
-for tar in $TAR; do 
-	if which $tar &> /dev/null; then
-		t="$t $tar";
-		echo -ne "$tar:\t"; $tar --version | head -1; 
-	fi
-done
-
-TAR="$t"
-
-echo -e "\nbest time of $n repetitions,\n"\
-"       src=$src, "\
-`du -sh $src | awk '{print $1}'`" in "`find $src | wc -l`" files, "\
-"avg "$((`du -sk $src | awk '{print $1}'`/`find $src -type f | wc -l`))"KB/file,\n"\
-"       archive=$dst, extract to $dst_path"
-
-echo -e "program\toperation\treal\tuser\tsystem\t%CPU\t     speed"
-> /tmp/tcp
-let op_num=0
-for op in "cf $dst $pax -C $src ." "tf $dst" "xf $dst -C $dst_path" \
-        "f $dst -C $dst_path --diff"; do
-        let tar_num=0
-        for tar in $TAR; do
-                echo -en "$tar\t${OPN[op_num]}\t"
-                for ((i=1; i<=$n; i++)); do
-                        echo $op | grep -q ^cf && rm -f $dst
-                        echo $op | grep -q ^xf &&
-                                { chmod -R u+w $dst_path
-                                rm -rf $dst_path; mkdir $dst_path; }
-                        sync
-                        if echo $op | grep -q ^f; then  # op == compare
-                                time $tar $op ${OPT[$tar_num]} > /dev/null
-                        else    # op in (create | list | extract)
-                                time $tar $op ${OPT[$tar_num]} > /dev/null \
-                                        || break 3
-                        fi 2>> /tmp/tcp
-                done
-                use_times
-                let tar_num++
-        done
-        let op_num++
-        echo
-done
-rm -rf $dst_path $dst
-echo
-cat /tmp/tcp
-rm -f /tmp/tcp
+# First run sed to substitute our variable in the sed command file
+sed -i -e "s/@@MAJOR@@/$MAJOR/g" -e "s/@@MINOR@@/$MINOR/g" cmd.sed
+sed -b -i -f cmd.sed src/rufus.rc
+sed -b -i -f cmd.sed res/appstore/AppxManifest.xml
+sed -b -i -f cmd.sed res/appstore/packme.cmd
+rm cmd.sed
+source ./bootstrap.sh
